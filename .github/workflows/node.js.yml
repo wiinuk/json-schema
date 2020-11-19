@@ -6,22 +6,22 @@ name: Node.js CI
 on:
   push:
     branches: [ main ]
+    tags: [ v* ]
   pull_request:
     branches: [ main ]
 
 jobs:
-  build:
-
-    runs-on: ubuntu-latest
-
+  test:
     strategy:
       matrix:
-        node-version: [10.x, 12.x, 14.x]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: [10.x, 12.x, 14.x]    
+    
+    runs-on: ${{ matrix.os }}
 
     steps:
     - uses: actions/checkout@v2
-    - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v1
+    - uses: actions/setup-node@v1
       with:
         node-version: ${{ matrix.node-version }}
     - run: npm ci
