@@ -5,11 +5,20 @@
   "main": "dist/index.js",
   "scripts": {
     "test": "mocha --require espower-typescript/guess test/**/*.ts",
+    "releaseBuild": "rimraf dist && tsc --build tsconfig.publish.json",
+    "prepublishOnly": "npm run releaseBuild"
+  },
+  "publishConfig": {
+      "access": "public"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/wiinuk/json-schema.git"
   },
+  "files": [
+      "dist/",
+      "README.md"
+  ],
   "keywords": [
     "json",
     "schema",
