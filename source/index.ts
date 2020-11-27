@@ -1,15 +1,27 @@
 type LiteralOrSuperType = boolean | number | string | bigint
-type Literal = null | undefined | LiteralOrSuperType
+/** @internal */
+export type Literal = null | undefined | LiteralOrSuperType
 type LiteralOrNever<T> =
     T extends (null | undefined) ? T :
     T extends LiteralOrSuperType ? LiteralOrSuperType extends T ? never : T :
     never
 
-interface StringSchema {
-    readonly kind: "string"
+type TypeOfResult =
+    | "string"
+    | "number"
+    | "bigint"
+    | "boolean"
+    | "symbol"
+    | "undefined"
+    | "object"
+    | "function"
+
+interface TypeOfSchema {
+    readonly kind: "typeof"
+    readonly type: TypeOfResult
 }
-interface NumberSchema {
-    readonly kind: "number"
+interface ObjectSchema {
+    readonly kind: "object"
 }
 interface LiteralSchema {
     readonly kind: "literal"
@@ -18,7 +30,16 @@ interface LiteralSchema {
 interface UnknownSchema {
     readonly kind: "unknown"
 }
-interface PropertySchema {
+interface NeverSchema {
+    readonly kind: "never"
+}
+/** @internal */
+interface ArraySchema {
+    readonly kind: "array"
+    readonly elementSchema: ValueSchema
+}
+/** @internal */
+export interface PropertySchema {
     readonly valueSchema: ValueSchema
 }
 interface PropertiesSchema {
@@ -27,17 +48,20 @@ interface PropertiesSchema {
 }
 interface UnionSchema {
     readonly kind: "union"
-    readonly schemas: readonly ValueSchema[]
+    readonly schemas: readonly [ValueSchema, ValueSchema, ...ValueSchema[]]
 }
 interface IntersectionSchema {
     readonly kind: "intersection"
-    readonly schemas: readonly ValueSchema[]
+    readonly schemas: readonly [ValueSchema, ValueSchema, ...ValueSchema[]]
 }
-type ValueSchema =
+/** @internal */
+export type ValueSchema =
     | UnknownSchema
+    | NeverSchema
     | LiteralSchema
-    | StringSchema
-    | NumberSchema
+    | TypeOfSchema
+    | ObjectSchema
+    | ArraySchema
     | PropertiesSchema
     | UnionSchema
     | IntersectionSchema
@@ -77,8 +101,25 @@ const identifierRegex = /^[a-zA-Z_$][0-9a-zA-Z_$]*$/
 const appendType = (schema: ValueSchema, result: unknown[]) => {
     switch (schema.kind) {
         case "unknown": return result.push("unknown")
-        case "string": return result.push("string")
-        case "number": return result.push("number")
+        case "never": return result.push("never")
+        case "object": return result.push("object")
+        case "typeof":
+            switch (schema.type) {
+                case "string":
+                case "number":
+                case "bigint":
+                case "boolean":
+                case "symbol":
+                case "undefined":
+                    return result.push(schema.type)
+
+                case "object":
+                    return result.push("object | null")
+
+                case "function":
+                    return result.push("Function")
+            }
+        case "array": appendType(schema.elementSchema, result); return result.push("[]")
         case "literal": {
             const { value } = schema
             switch (value) {
@@ -107,7 +148,6 @@ const appendType = (schema: ValueSchema, result: unknown[]) => {
         }
         case "union": {
             const { schemas } = schema
-            if (schemas.length === 0) { return result.push("never") }
             appendType(schemas[0], result)
             for (let i = 1; i < schemas.length; i++) {
                 result.push(" | ")
@@ -117,13 +157,16 @@ const appendType = (schema: ValueSchema, result: unknown[]) => {
         }
         case "intersection": {
             const { schemas } = schema
-            if (schemas.length === 0) { return result.push("unknown") }
             appendType(schemas[0], result)
             for (let i = 1; i < schemas.length; i++) {
                 result.push(" & ")
                 appendType(schemas[i], result)
             }
             return
+        }
+        default: {
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
+            const _: never = schema
         }
     }
 }
@@ -140,17 +183,26 @@ class Schema<T> {
         const validateBy = (schema: ValueSchema, path: (string | number)[], actualValue: unknown): ValidationResult[] | null => {
             switch (schema.kind) {
                 case "unknown": return null
+                case "never": return [{ path, schema, actualValue }]
                 case "literal":
                     if (actualValue === schema.value) { return null }
                     return [{ path, schema, actualValue }]
 
-                case "string":
-                    if (typeof actualValue === "string") { return null }
+                case "typeof":
+                    if (typeof actualValue === schema.type) { return null }
                     return [{ path, schema, actualValue }]
 
-                case "number":
-                    if (typeof actualValue === "number") { return null }
+                case "object":
+                    if (null !== actualValue && typeof actualValue === "object") { return null }
                     return [{ path, schema, actualValue }]
+
+                case "array":
+                    if (!Array.isArray(actualValue)) { return [{ path, schema, actualValue }] }
+                    for (let i = 0; i < actualValue.length; i++) {
+                        const r = validateBy(schema.elementSchema, [...path, i], actualValue[i])
+                        if (r) { return r }
+                    }
+                    return null
 
                 case "properties": {
                     const { propertySchemas } = schema
@@ -185,6 +237,11 @@ class Schema<T> {
                     }
                     return null
                 }
+                default: {
+                    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                    const _: never = schema
+                    return _
+                }
             }
         }
         return validateBy(this._schema, [], x)
@@ -197,17 +254,22 @@ class Schema<T> {
 }
 
 export const never = new Schema<never>({
-    kind: "union",
-    schemas: [],
+    kind: "never"
 })
 export const string = new Schema<string>({
-    kind: "string",
+    kind: "typeof",
+    type: "string",
 })
 export const number = new Schema<number>({
-    kind: "number",
+    kind: "typeof",
+    type: "number",
 })
 export const unknown = new Schema<unknown>({
     kind: "unknown",
+})
+export const array = <T>(element: Schema<T>): Schema<T[]> => new Schema({
+    kind: "array",
+    elementSchema: element._schema
 })
 
 export const literal = <TLiteral>(value: LiteralOrNever<TLiteral>): Schema<typeof value> => {
@@ -233,7 +295,7 @@ export const union = <TSchemas extends Schema<unknown>[]>(...schemas: TSchemas):
         default:
             return new Schema({
                 kind: "union",
-                schemas: schemas.map(s => s._schema)
+                schemas: schemas.map(s => s._schema) as [ValueSchema, ValueSchema, ...ValueSchema[]]
             })
     }
 }
@@ -248,7 +310,7 @@ export const intersection = <TSchemas extends Schema<unknown>[]>(...schemas: TSc
         default:
             return new Schema({
                 kind: "intersection",
-                schemas: schemas.map(s => s._schema)
+                schemas: schemas.map(s => s._schema) as [ValueSchema, ValueSchema, ...ValueSchema[]]
             })
     }
 }
